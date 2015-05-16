@@ -1,9 +1,10 @@
 (ns tf-idf.core
+  (:gen-class)
   (:require [clojure.string :as string]
             [sparkling.conf :as conf]
             [sparkling.core :as spark]
             [sparkling.destructuring :as s-de])
-  (:gen-class))
+  )
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -13,43 +14,43 @@
                  "or" "our" "so" "this" "the" "that" "to" "we"})
 
 (defn terms [content]
-  (map string/lower-case (string/split content #" ")))
+  (println "Terms::" content)
+  (map string/lower-case (string/split content #" "))
+  )
 
-(def remove-stopwords  (partial remove (partial contains? stopwords)))
-
-
-(remove-stopwords (terms "A quick brown fox jumps"))
-
-
-
+(def remove-stopwords
+  (partial remove (partial contains? stopwords)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tf / idf / tf*idf functions
-
 (defn idf [doc-count doc-count-for-term]
   (Math/log (/ doc-count (+ 1.0 doc-count-for-term))))
 
-
-(System/getenv "SPARK_LOCAL_IP")
-
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Basic Spark management
-
 (defn make-spark-context []
   (let [c (-> (conf/spark-conf)
-              (conf/master "local[*]")
-              (conf/app-name "tfidf"))]
+              (conf/master "spark://master:7077")
+              ;(conf/master "local[*]")
+              (conf/app-name "tfidf")
+              (conf/set "spark.driver.port" "7001")
+              (conf/set "spark.fileserver.port" "7002")
+              (conf/set "spark.broadcast.port" "7003")
+              (conf/set "spark.replClassServer.port" "7004")
+              (conf/set "spark.blockManager.port" "7005")
+              (conf/set "spark.executor.port" "7006")
+              (conf/set "spark.broadcast.factory" "org.apache.spark.broadcast.HttpBroadcastFactory")
+              )]
     (spark/spark-context c)))
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Basic data model generation functions
 (defn term-count-from-doc
   "Returns a stopword filtered seq of tuples of doc-id,[term term-count doc-terms-count]"
   [doc-id content]
-  (let [terms (remove-stopwords
-                (terms content))
+  (let [
+        ;terms (remove-stopwords (terms content))
+        terms (map string/lower-case (string/split content #" "))
         doc-terms-count (count terms)
         term-count (frequencies terms)]
     (map (fn [term] (spark/tuple [doc-id term] [(term-count term) doc-terms-count]))
@@ -60,9 +61,6 @@
 
 (defn document-count [documents]
   (spark/count documents))
-
-; (term-count-from-doc "doc1" "A quick brown fox")
-
 
 (defn term-count-by-doc-term [documents]
   (->>
@@ -112,18 +110,23 @@
        swap-key-value
        ))
 
-
+(defn lazy-file-lines [file]
+  (letfn [(helper [rdr]
+                  (lazy-seq
+                    (if-let [line (.readLine rdr)]
+                      (cons line (helper rdr))
+                      (do (.close rdr) nil))))]
+    (helper (clojure.java.io/reader file))))
 
 (defn -main [& args]
   (let [sc (make-spark-context)
-        documents
-        [(spark/tuple :doc1 "Four score and seven years ago our fathers brought forth on this continent a new nation")
-         (spark/tuple :doc2 "conceived in Liberty and dedicated to the proposition that all men are created equal")
-         (spark/tuple :doc3 "Now we are engaged in a great civil war testing whether that nation or any nation so")
-         (spark/tuple :doc4 "conceived and so dedicated can long endure We are met on a great battlefield of that war")]
+        path-to-sentences "/data/deu_news_2010_30K-sentences.txt"
+        documents  (map (fn [line]
+                          (let [idx (.substring line 0 (.indexOf line "\t"))
+                                sentence (.substring line (.indexOf line "\t") (.length line))]
+                            (spark/tuple (str "doc-" idx) sentence)))
+                        (lazy-file-lines path-to-sentences))
         corpus (spark/parallelize-pairs sc documents)
-        tf-idf (tf-idf corpus)]
-    (println (.toDebugString tf-idf))
-    (clojure.pprint/pprint (spark/collect tf-idf))
-    #_(clojure.pprint/pprint (spark/take 10 (sort-by-value tf-idf)))
-    ))
+        tf-idf (tf-idf corpus)
+        ]
+    (clojure.pprint/pprint (spark/collect tf-idf))))
